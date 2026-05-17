@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"log"
 
 	"github.com/ayukumar261/hackathon/go-api/internal/config"
@@ -9,6 +10,9 @@ import (
 )
 
 func main() {
+	down := flag.Bool("down", false, "drop tables instead of migrating up")
+	flag.Parse()
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("config: %v", err)
@@ -17,7 +21,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("db: %v", err)
 	}
-	if err := gdb.AutoMigrate(&models.User{}, &models.Session{}, &models.Resume{}); err != nil {
+
+	if *down {
+		if err := gdb.Migrator().DropTable(&models.Position{}); err != nil {
+			log.Fatalf("drop: %v", err)
+		}
+		log.Println("rollback complete")
+		return
+	}
+
+	if err := gdb.AutoMigrate(&models.User{}, &models.Session{}, &models.Resume{}, &models.Position{}); err != nil {
 		log.Fatalf("migrate: %v", err)
 	}
 	log.Println("migration complete")

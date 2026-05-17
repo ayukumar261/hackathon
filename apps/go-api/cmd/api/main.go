@@ -40,13 +40,14 @@ func main() {
 		log.Fatalf("r2: %v", err)
 	}
 	resumes := &handlers.ResumesHandler{DB: gdb, S3: s3Client, Presign: presign, Bucket: cfg.R2Bucket}
+	positions := &handlers.PositionsHandler{DB: gdb}
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{cfg.FrontendURL},
-		AllowedMethods:   []string{"GET", "POST", "DELETE", "OPTIONS"},
+		AllowedMethods:   []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Content-Type"},
 		AllowCredentials: true,
 	}))
@@ -67,6 +68,15 @@ func main() {
 		r.Get("/", resumes.List)
 		r.Get("/{id}", resumes.DownloadURL)
 		r.Delete("/{id}", resumes.Delete)
+	})
+
+	r.Route("/api/positions", func(r chi.Router) {
+		r.Use(mw.RequireUser(gdb))
+		r.Post("/", positions.Create)
+		r.Get("/", positions.List)
+		r.Get("/{id}", positions.Get)
+		r.Patch("/{id}", positions.Update)
+		r.Delete("/{id}", positions.Delete)
 	})
 
 	addr := ":" + cfg.Port
