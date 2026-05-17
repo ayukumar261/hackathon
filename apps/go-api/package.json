@@ -1,0 +1,11 @@
+{
+  "name": "go-api",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "go run .",
+    "build": "go build -o bin/go-api .",
+    "start": "./bin/go-api",
+    "lint": "go vet ./..."
+  }
+}
