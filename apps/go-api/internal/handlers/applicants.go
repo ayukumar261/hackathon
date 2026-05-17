@@ -16,7 +16,9 @@ import (
 )
 
 type ApplicantsHandler struct {
-	DB *gorm.DB
+	DB                *gorm.DB
+	AgentPhoneAPIKey  string
+	AgentPhoneAgentID string
 }
 
 type applicantCreateInput struct {

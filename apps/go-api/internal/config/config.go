@@ -19,6 +19,8 @@ type Config struct {
 	R2SecretAccessKey  string
 	R2Bucket           string
 	R2Endpoint         string
+	AgentPhoneAPIKey   string
+	AgentPhoneAgentID  string
 }
 
 func Load() (*Config, error) {
@@ -36,6 +38,8 @@ func Load() (*Config, error) {
 		R2SecretAccessKey:  os.Getenv("R2_SECRET_ACCESS_KEY"),
 		R2Bucket:           os.Getenv("R2_BUCKET"),
 		R2Endpoint:         os.Getenv("R2_ENDPOINT"),
+		AgentPhoneAPIKey:   os.Getenv("AGENTPHONE_API_KEY"),
+		AgentPhoneAgentID:  os.Getenv("AGENTPHONE_AGENT_ID"),
 	}
 	if c.Port == "" {
 		c.Port = "8080"
