@@ -14,6 +14,11 @@ type Config struct {
 	GoogleRedirectURL  string
 	FrontendURL        string
 	Port               string
+	R2AccountID        string
+	R2AccessKeyID      string
+	R2SecretAccessKey  string
+	R2Bucket           string
+	R2Endpoint         string
 }
 
 func Load() (*Config, error) {
@@ -26,6 +31,11 @@ func Load() (*Config, error) {
 		GoogleRedirectURL:  os.Getenv("GOOGLE_REDIRECT_URL"),
 		FrontendURL:        os.Getenv("FRONTEND_URL"),
 		Port:               os.Getenv("PORT"),
+		R2AccountID:        os.Getenv("R2_ACCOUNT_ID"),
+		R2AccessKeyID:      os.Getenv("R2_ACCESS_KEY_ID"),
+		R2SecretAccessKey:  os.Getenv("R2_SECRET_ACCESS_KEY"),
+		R2Bucket:           os.Getenv("R2_BUCKET"),
+		R2Endpoint:         os.Getenv("R2_ENDPOINT"),
 	}
 	if c.Port == "" {
 		c.Port = "8080"

@@ -8,7 +8,9 @@ import (
 	"github.com/ayukumar261/hackathon/go-api/internal/config"
 	"github.com/ayukumar261/hackathon/go-api/internal/db"
 	"github.com/ayukumar261/hackathon/go-api/internal/handlers"
+	mw "github.com/ayukumar261/hackathon/go-api/internal/middleware"
 	"github.com/ayukumar261/hackathon/go-api/internal/oauth"
+	"github.com/ayukumar261/hackathon/go-api/internal/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
@@ -27,6 +29,17 @@ func main() {
 
 	auth := &handlers.AuthHandler{DB: gdb, Cfg: cfg, OAuthCfg: oauth.GoogleConfig(cfg)}
 	sess := &handlers.SessionHandler{DB: gdb}
+
+	s3Client, presign, err := storage.NewR2Client(storage.R2Config{
+		AccountID:       cfg.R2AccountID,
+		AccessKeyID:     cfg.R2AccessKeyID,
+		SecretAccessKey: cfg.R2SecretAccessKey,
+		Endpoint:        cfg.R2Endpoint,
+	})
+	if err != nil {
+		log.Fatalf("r2: %v", err)
+	}
+	resumes := &handlers.ResumesHandler{DB: gdb, S3: s3Client, Presign: presign, Bucket: cfg.R2Bucket}
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -47,6 +60,14 @@ func main() {
 	r.Get("/api/users/google/callback", auth.GoogleCallback)
 	r.Get("/sessions", sess.Get)
 	r.Delete("/sessions", sess.Delete)
+
+	r.Route("/api/resumes", func(r chi.Router) {
+		r.Use(mw.RequireUser(gdb))
+		r.Post("/", resumes.Upload)
+		r.Get("/", resumes.List)
+		r.Get("/{id}", resumes.DownloadURL)
+		r.Delete("/{id}", resumes.Delete)
+	})
 
 	addr := ":" + cfg.Port
 	log.Printf("go-api listening on %s", addr)

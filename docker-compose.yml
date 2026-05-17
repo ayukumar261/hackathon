@@ -21,6 +21,8 @@ services:
     volumes:
       - ./apps/go-api:/app
       - /app/tmp
+    env_file:
+      - ./apps/go-api/.env
     depends_on:
       - postgres
       - redis

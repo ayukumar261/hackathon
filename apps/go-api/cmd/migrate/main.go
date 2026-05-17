@@ -17,7 +17,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("db: %v", err)
 	}
-	if err := gdb.AutoMigrate(&models.User{}, &models.Session{}); err != nil {
+	if err := gdb.AutoMigrate(&models.User{}, &models.Session{}, &models.Resume{}); err != nil {
 		log.Fatalf("migrate: %v", err)
 	}
 	log.Println("migration complete")

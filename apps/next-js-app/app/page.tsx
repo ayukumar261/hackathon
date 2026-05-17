@@ -63,7 +63,10 @@ export default function Home() {
               </div>
             </div>
           </CardHeader>
-          <CardFooter>
+          <CardFooter className="flex flex-col gap-2">
+            <Button asChild className="w-full">
+              <Link href="/resumes">My resumes</Link>
+            </Button>
             <Button variant="outline" onClick={onLogout} className="w-full">
               Log out
             </Button>
