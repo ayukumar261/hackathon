@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/joho/godotenv"
 )
@@ -21,6 +22,15 @@ type Config struct {
 	R2Endpoint         string
 	AgentPhoneAPIKey   string
 	AgentPhoneAgentID  string
+
+	AgentPhoneWebhookSecret string
+	AgentPhoneWebhookStream string
+	AgentPhoneLLMModel      string
+	AgentPhoneMaxTurns      int
+	AgentPhoneToolLoopMax   int
+	AIGatewayAPIKey         string
+	AIGatewayBaseURL        string
+	RedisURL                string
 }
 
 func Load() (*Config, error) {
@@ -40,12 +50,43 @@ func Load() (*Config, error) {
 		R2Endpoint:         os.Getenv("R2_ENDPOINT"),
 		AgentPhoneAPIKey:   os.Getenv("AGENTPHONE_API_KEY"),
 		AgentPhoneAgentID:  os.Getenv("AGENTPHONE_AGENT_ID"),
+
+		AgentPhoneWebhookSecret: os.Getenv("AGENTPHONE_WEBHOOK_SECRET"),
+		AgentPhoneWebhookStream: os.Getenv("AGENTPHONE_WEBHOOK_STREAM"),
+		AgentPhoneLLMModel:      os.Getenv("AGENTPHONE_LLM_MODEL"),
+		AgentPhoneMaxTurns:      atoiOr(os.Getenv("AGENTPHONE_MAX_TURNS"), 40),
+		AgentPhoneToolLoopMax:   atoiOr(os.Getenv("AGENTPHONE_TOOL_LOOP_MAX"), 5),
+		AIGatewayAPIKey:         os.Getenv("AI_GATEWAY_API_KEY"),
+		AIGatewayBaseURL:        os.Getenv("AI_GATEWAY_BASE_URL"),
+		RedisURL:                os.Getenv("REDIS_URL"),
 	}
 	if c.Port == "" {
 		c.Port = "8080"
 	}
+	if c.AgentPhoneWebhookStream == "" {
+		c.AgentPhoneWebhookStream = "off"
+	}
+	if c.AgentPhoneLLMModel == "" {
+		c.AgentPhoneLLMModel = "openai/gpt-4o-mini"
+	}
+	if c.AIGatewayBaseURL == "" {
+		c.AIGatewayBaseURL = "https://ai-gateway.vercel.sh/v1"
+	}
 	if c.DatabaseURL == "" {
 		return nil, fmt.Errorf("DATABASE_URL is required")
 	}
+	if c.RedisURL == "" {
+		return nil, fmt.Errorf("REDIS_URL is required")
+	}
 	return c, nil
+}
+
+func atoiOr(s string, def int) int {
+	if s == "" {
+		return def
+	}
+	if n, err := strconv.Atoi(s); err == nil {
+		return n
+	}
+	return def
 }

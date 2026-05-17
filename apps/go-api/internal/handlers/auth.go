@@ -10,6 +10,7 @@ import (
 
 	"github.com/ayukumar261/hackathon/go-api/internal/config"
 	"github.com/ayukumar261/hackathon/go-api/internal/models"
+	"github.com/ayukumar261/hackathon/go-api/internal/templates"
 	"golang.org/x/oauth2"
 	"gorm.io/gorm"
 )
@@ -110,6 +111,11 @@ func (h *AuthHandler) GoogleCallback(w http.ResponseWriter, r *http.Request) {
 		user.Name = info.Name
 		user.Picture = info.Picture
 		h.DB.Save(&user)
+	}
+
+	var existingTemplate models.Template
+	if err := h.DB.Where("user_id = ?", user.ID).First(&existingTemplate).Error; err == gorm.ErrRecordNotFound {
+		h.DB.Create(&models.Template{UserID: user.ID, Content: templates.DefaultContent})
 	}
 
 	session := models.Session{

@@ -10,6 +10,7 @@ import (
 
 	mw "github.com/ayukumar261/hackathon/go-api/internal/middleware"
 	"github.com/ayukumar261/hackathon/go-api/internal/models"
+	"github.com/ayukumar261/hackathon/go-api/internal/templates"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -19,6 +20,7 @@ type ApplicantsHandler struct {
 	DB                *gorm.DB
 	AgentPhoneAPIKey  string
 	AgentPhoneAgentID string
+	Templates         *templates.RedisStore
 }
 
 type applicantCreateInput struct {

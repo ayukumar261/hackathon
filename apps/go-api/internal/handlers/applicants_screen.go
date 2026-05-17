@@ -11,6 +11,8 @@ import (
 	"unicode"
 
 	mw "github.com/ayukumar261/hackathon/go-api/internal/middleware"
+	"github.com/ayukumar261/hackathon/go-api/internal/models"
+	"github.com/ayukumar261/hackathon/go-api/internal/templates"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -39,9 +41,10 @@ func normalizeE164(s string) string {
 }
 
 type agentPhoneCallRequest struct {
-	AgentID         string `json:"agentId"`
-	ToNumber        string `json:"toNumber"`
-	InitialGreeting string `json:"initialGreeting,omitempty"`
+	AgentID         string            `json:"agentId"`
+	ToNumber        string            `json:"toNumber"`
+	InitialGreeting string            `json:"initialGreeting,omitempty"`
+	Metadata        map[string]string `json:"metadata,omitempty"`
 }
 
 func (h *ApplicantsHandler) Screen(w http.ResponseWriter, r *http.Request) {
@@ -64,6 +67,11 @@ func (h *ApplicantsHandler) Screen(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
+	var pos models.Position
+	if err := h.DB.Select("title", "description").First(&pos, "id = ?", a.PositionID).Error; err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
 	toNumber := normalizeE164(a.Phone)
 	if toNumber == "" {
 		writeError(w, http.StatusBadRequest, "applicant has no phone number")
@@ -74,10 +82,37 @@ func (h *ApplicantsHandler) Screen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Snapshot the recruiter's template into Redis so the agent loop can
+	// mutate it during the call and the frontend can stream live updates.
+	var tmpl models.Template
+	if err := h.DB.Where("user_id = ?", user.ID).First(&tmpl).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			tmpl = models.Template{UserID: user.ID, Content: templates.DefaultContent}
+			if err := h.DB.Create(&tmpl).Error; err != nil {
+				writeError(w, http.StatusInternalServerError, "db error")
+				return
+			}
+		} else {
+			writeError(w, http.StatusInternalServerError, "db error")
+			return
+		}
+	}
+	if h.Templates != nil {
+		if err := h.Templates.Set(r.Context(), a.ID, tmpl.Content); err != nil {
+			writeError(w, http.StatusInternalServerError, "template store error")
+			return
+		}
+	}
+
 	body, err := json.Marshal(agentPhoneCallRequest{
 		AgentID:         h.AgentPhoneAgentID,
 		ToNumber:        toNumber,
-		InitialGreeting: "Hi " + a.Name + ", this is a screening call. Please hold.",
+		InitialGreeting: "Hi " + a.Name + ", this is a screening call for the " + pos.Title + " role. Please hold.",
+		Metadata: map[string]string{
+			"applicantId":    a.ID.String(),
+			"jobTitle":       pos.Title,
+			"jobDescription": pos.Description,
+		},
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "encode error")

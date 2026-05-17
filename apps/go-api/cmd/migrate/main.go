@@ -30,7 +30,7 @@ func main() {
 		return
 	}
 
-	if err := gdb.AutoMigrate(&models.User{}, &models.Session{}, &models.Resume{}, &models.Position{}, &models.Applicant{}); err != nil {
+	if err := gdb.AutoMigrate(&models.User{}, &models.Session{}, &models.Resume{}, &models.Position{}, &models.Applicant{}, &models.Template{}); err != nil {
 		log.Fatalf("migrate: %v", err)
 	}
 	log.Println("migration complete")
