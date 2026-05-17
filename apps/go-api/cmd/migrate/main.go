@@ -23,14 +23,14 @@ func main() {
 	}
 
 	if *down {
-		if err := gdb.Migrator().DropTable(&models.Position{}); err != nil {
+		if err := gdb.Migrator().DropTable(&models.Applicant{}, &models.Position{}); err != nil {
 			log.Fatalf("drop: %v", err)
 		}
 		log.Println("rollback complete")
 		return
 	}
 
-	if err := gdb.AutoMigrate(&models.User{}, &models.Session{}, &models.Resume{}, &models.Position{}); err != nil {
+	if err := gdb.AutoMigrate(&models.User{}, &models.Session{}, &models.Resume{}, &models.Position{}, &models.Applicant{}); err != nil {
 		log.Fatalf("migrate: %v", err)
 	}
 	log.Println("migration complete")

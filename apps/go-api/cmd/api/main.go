@@ -41,6 +41,7 @@ func main() {
 	}
 	resumes := &handlers.ResumesHandler{DB: gdb, S3: s3Client, Presign: presign, Bucket: cfg.R2Bucket}
 	positions := &handlers.PositionsHandler{DB: gdb}
+	applicants := &handlers.ApplicantsHandler{DB: gdb}
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -77,6 +78,15 @@ func main() {
 		r.Get("/{id}", positions.Get)
 		r.Patch("/{id}", positions.Update)
 		r.Delete("/{id}", positions.Delete)
+	})
+
+	r.Route("/api/applicants", func(r chi.Router) {
+		r.Use(mw.RequireUser(gdb))
+		r.Post("/", applicants.Create)
+		r.Get("/", applicants.List)
+		r.Get("/{id}", applicants.Get)
+		r.Patch("/{id}", applicants.Update)
+		r.Delete("/{id}", applicants.Delete)
 	})
 
 	addr := ":" + cfg.Port
