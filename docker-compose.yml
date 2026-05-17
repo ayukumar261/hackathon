@@ -1,0 +1,50 @@
+services:
+  next-js-app:
+    build: ./apps/next-js-app
+    container_name: next-js-app
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./apps/next-js-app:/app
+      - /app/node_modules
+      - /app/.next
+    environment:
+      WATCHPACK_POLLING: "true"
+      CHOKIDAR_USEPOLLING: "true"
+      NODE_ENV: development
+
+  go-api:
+    build: ./apps/go-api
+    container_name: go-api
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./apps/go-api:/app
+      - /app/tmp
+    depends_on:
+      - postgres
+      - redis
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: hackathon
+      POSTGRES_PASSWORD: hackathon
+      POSTGRES_DB: hackathon
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  postgres_data:
+  redis_data:

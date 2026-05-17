@@ -2,6 +2,28 @@
 
 This Turborepo starter is maintained by the Turborepo core team.
 
+## Local development (Docker)
+
+Start everything (Next.js, Go API, Postgres, Redis):
+
+```sh
+make up
+```
+
+Stop everything:
+
+```sh
+make down
+```
+
+Wipe Postgres/Redis data too:
+
+```sh
+make clean
+```
+
+Apps are served at `http://localhost:3000` (Next.js) and `http://localhost:8080` (Go API). Both support hot-reload — just edit files and save.
+
 ## Using this example
 
 Run the following command:
