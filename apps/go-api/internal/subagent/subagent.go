@@ -9,7 +9,10 @@ import (
 	"log"
 	"strings"
 
+	"time"
+
 	"github.com/ayukumar261/hackathon/go-api/internal/aigateway"
+	"github.com/ayukumar261/hackathon/go-api/internal/supermemory"
 	"github.com/ayukumar261/hackathon/go-api/internal/templates"
 	"github.com/ayukumar261/hackathon/go-api/internal/transcripts"
 	"github.com/google/uuid"
@@ -19,6 +22,7 @@ const (
 	toolReadTranscript = "read_transcript"
 	toolReadTemplate   = "read_template"
 	toolPatchTemplate  = "patch_template"
+	toolSearchResume   = "search_resume"
 	defaultLoopMax     = 10
 	transcriptTailN    = 50
 	summaryMaxChars    = 200
@@ -28,11 +32,12 @@ type Runner struct {
 	AI          aigateway.Streamer
 	Transcripts *transcripts.Store
 	Templates   *templates.RedisStore
+	Supermemory *supermemory.Client
 	LoopMax     int
 }
 
-func New(ai aigateway.Streamer, ts *transcripts.Store, tpl *templates.RedisStore) *Runner {
-	return &Runner{AI: ai, Transcripts: ts, Templates: tpl}
+func New(ai aigateway.Streamer, ts *transcripts.Store, tpl *templates.RedisStore, sm *supermemory.Client) *Runner {
+	return &Runner{AI: ai, Transcripts: ts, Templates: tpl, Supermemory: sm}
 }
 
 func tools() []aigateway.Tool {
@@ -51,6 +56,14 @@ func tools() []aigateway.Tool {
 				Name:        toolReadTemplate,
 				Description: "Read the current screening report markdown.",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: aigateway.ToolFunction{
+				Name:        toolSearchResume,
+				Description: "Semantic search over the candidate's resume. Use to verify claims from the transcript or fill in details (past roles, dates, skills, education) before patching the report.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","description":"Short natural-language query."}},"required":["query"],"additionalProperties":false}`),
 			},
 		},
 		{
@@ -149,6 +162,29 @@ func (r *Runner) dispatchTool(ctx context.Context, applicantID uuid.UUID, tc aig
 			return jsonErr(err)
 		}
 		return jsonOK(map[string]string{"template": v})
+	case toolSearchResume:
+		var args struct {
+			Query string `json:"query"`
+		}
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+			return jsonErr(err)
+		}
+		if r.Supermemory == nil || !r.Supermemory.Enabled() {
+			return `{"error":"resume search not configured"}`
+		}
+		if r.Transcripts != nil {
+			r.Transcripts.AppendResumeSearch(ctx, applicantID, args.Query)
+		}
+		sctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		defer cancel()
+		snippet, err := r.Supermemory.Search(sctx, "applicant:"+applicantID.String(), args.Query, 5)
+		if err != nil {
+			return jsonErr(err)
+		}
+		if strings.TrimSpace(snippet) == "" {
+			return jsonOK(map[string]string{"results": "", "note": "no relevant resume content found"})
+		}
+		return jsonOK(map[string]string{"results": snippet})
 	case toolPatchTemplate:
 		var args struct {
 			Section    string `json:"section"`

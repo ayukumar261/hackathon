@@ -19,12 +19,14 @@ type PositionsHandler struct {
 }
 
 type positionCreateInput struct {
-	Title       string `json:"title"`
-	Description string `json:"description"`
+	Title       string  `json:"title"`
+	Company     *string `json:"company"`
+	Description string  `json:"description"`
 }
 
 type positionUpdateInput struct {
 	Title       *string `json:"title"`
+	Company     *string `json:"company"`
 	Description *string `json:"description"`
 }
 
@@ -53,9 +55,16 @@ func (h *PositionsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "description is required")
 		return
 	}
+	company := "Helix Compute"
+	if in.Company != nil {
+		if c := strings.TrimSpace(*in.Company); c != "" {
+			company = c
+		}
+	}
 	p := models.Position{
 		UserID:      user.ID,
 		Title:       in.Title,
+		Company:     company,
 		Description: in.Description,
 	}
 	if err := h.DB.Create(&p).Error; err != nil {
@@ -162,6 +171,14 @@ func (h *PositionsHandler) Update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		updates["title"] = t
+	}
+	if in.Company != nil {
+		c := strings.TrimSpace(*in.Company)
+		if c == "" {
+			writeError(w, http.StatusBadRequest, "company cannot be empty")
+			return
+		}
+		updates["company"] = c
 	}
 	if in.Description != nil {
 		d := strings.TrimSpace(*in.Description)

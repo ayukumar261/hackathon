@@ -10,7 +10,7 @@ import { SelectedPositionProvider } from "@/lib/hooks/useSelectedPosition";
 import { SelectedApplicantProvider } from "@/lib/hooks/useSelectedApplicant";
 import { logout } from "@/lib/session";
 import PositionSelect from "./components/PositionSelect";
-import ApplicantsSidebar from "./components/ApplicantsSidebar";
+import ApplicantSelect from "./components/ApplicantSelect";
 import SetTemplateDialog from "./components/SetTemplateDialog";
 
 export default function DashboardLayout({
@@ -49,7 +49,11 @@ export default function DashboardLayout({
       <SelectedApplicantProvider>
         <div className="flex flex-col h-screen">
           <nav className="flex items-center justify-between border-b border-foreground/5 bg-white px-4 py-3">
-            <PositionSelect />
+            <div className="flex items-center gap-2">
+              <PositionSelect />
+              <span className="text-muted-foreground">/</span>
+              <ApplicantSelect />
+            </div>
             <div className="flex items-center gap-2">
               <SetTemplateDialog />
               <Button variant="outline" disabled={signingOut} onClick={handleSignOut}>
@@ -58,10 +62,7 @@ export default function DashboardLayout({
               </Button>
             </div>
           </nav>
-          <div className="flex flex-1 min-h-0">
-            <ApplicantsSidebar />
-            <main className="flex-1 min-h-0 overflow-hidden">{children}</main>
-          </div>
+          <main className="flex-1 min-h-0 overflow-hidden">{children}</main>
         </div>
       </SelectedApplicantProvider>
     </SelectedPositionProvider>

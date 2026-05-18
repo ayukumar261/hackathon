@@ -8,6 +8,7 @@ export const POSITIONS_KEY = "/api/positions";
 export type Position = {
   id: string;
   title: string;
+  company: string;
   description: string;
   createdAt: string;
   updatedAt: string;

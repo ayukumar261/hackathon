@@ -80,10 +80,12 @@ export function TranscriptPanel() {
         ) : (
           turns.map((t) =>
             t.role === "system" ? (
-              t.text.startsWith("Sub-agent ") ? (
+              t.text.startsWith("Sub-agent ") ||
+              t.text.startsWith("Supermemory ") ? (
                 <div
                   key={t.id}
-                  className="self-start text-xs italic text-muted-foreground py-1"
+                  className="self-start text-xs italic text-muted-foreground py-1 line-clamp-2"
+                  title={t.text}
                 >
                   {t.text}
                 </div>

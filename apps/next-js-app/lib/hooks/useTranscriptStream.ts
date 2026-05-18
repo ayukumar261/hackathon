@@ -29,7 +29,8 @@ type Event = {
     | "turn_end"
     | "call_ended"
     | "sub_agent_invoked"
-    | "sub_agent_completed";
+    | "sub_agent_completed"
+    | "resume_search";
   text: string;
   ts: number;
 };
@@ -85,6 +86,23 @@ export function useTranscriptStream(applicantId: string | undefined) {
               role: "assistant",
               text: ev.text,
               done: false,
+              ts: ev.ts,
+            },
+          ];
+        }
+        if (ev.kind === "resume_search") {
+          const last = prev[prev.length - 1];
+          const base =
+            last && last.role === "assistant" && !last.done
+              ? [...prev.slice(0, -1), { ...last, done: true }]
+              : prev;
+          return [
+            ...base,
+            {
+              id: ev.id,
+              role: "system",
+              text: `Supermemory searched — ${ev.text}`,
+              done: true,
               ts: ev.ts,
             },
           ];

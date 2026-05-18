@@ -3,17 +3,27 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/mail"
 	"strconv"
 	"strings"
 
+	"log"
+
 	mw "github.com/ayukumar261/hackathon/go-api/internal/middleware"
 	"github.com/ayukumar261/hackathon/go-api/internal/models"
+	"github.com/ayukumar261/hackathon/go-api/internal/supermemory"
 	"github.com/ayukumar261/hackathon/go-api/internal/templates"
+	"io"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"context"
+	"time"
 )
 
 type ApplicantsHandler struct {
@@ -21,6 +31,53 @@ type ApplicantsHandler struct {
 	AgentPhoneAPIKey  string
 	AgentPhoneAgentID string
 	Templates         *templates.RedisStore
+	S3                *s3.Client
+	Presign           *s3.PresignClient
+	Bucket            string
+	Supermemory       *supermemory.Client
+}
+
+// ingestResumeAsync presigns the R2 object and submits it to Supermemory in the background.
+// Tagged by applicant:<id> so the sub-agent can scope queries.
+func (h *ApplicantsHandler) ingestResumeAsync(applicantID uuid.UUID, resumeKey string) {
+	if h.Supermemory == nil || !h.Supermemory.Enabled() {
+		return
+	}
+	if strings.TrimSpace(resumeKey) == "" {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		obj, err := h.S3.GetObject(ctx, &s3.GetObjectInput{
+			Bucket: aws.String(h.Bucket),
+			Key:    aws.String(resumeKey),
+		})
+		if err != nil {
+			log.Printf("supermemory r2 get failed applicant=%s: %v", applicantID, err)
+			return
+		}
+		data, err := io.ReadAll(obj.Body)
+		obj.Body.Close()
+		if err != nil {
+			log.Printf("supermemory r2 read failed applicant=%s: %v", applicantID, err)
+			return
+		}
+		ct := "application/pdf"
+		if obj.ContentType != nil && *obj.ContentType != "" {
+			ct = *obj.ContentType
+		}
+		tag := "applicant:" + applicantID.String()
+		docID, err := h.Supermemory.IngestFile(ctx, tag, resumeKey, ct, data, map[string]string{
+			"applicantId": applicantID.String(),
+			"resumeKey":   resumeKey,
+		})
+		if err != nil {
+			log.Printf("supermemory ingest failed applicant=%s: %v", applicantID, err)
+			return
+		}
+		log.Printf("supermemory ingest ok applicant=%s doc=%s", applicantID, docID)
+	}()
 }
 
 type applicantCreateInput struct {
@@ -136,6 +193,7 @@ func (h *ApplicantsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
+	h.ingestResumeAsync(a.ID, a.Resume)
 	writeJSON(w, http.StatusCreated, a)
 }
 
@@ -303,6 +361,7 @@ func (h *ApplicantsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "no fields to update")
 		return
 	}
+	prevResume := a.Resume
 	if err := h.DB.Model(a).Updates(updates).Error; err != nil {
 		if isDuplicateErr(err) {
 			writeError(w, http.StatusConflict, "email or phone already exists")
@@ -311,7 +370,94 @@ func (h *ApplicantsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
+	if a.Resume != "" && a.Resume != prevResume {
+		h.ingestResumeAsync(a.ID, a.Resume)
+	}
 	writeJSON(w, http.StatusOK, a)
+}
+
+func (h *ApplicantsHandler) ResumeURL(w http.ResponseWriter, r *http.Request) {
+	user, ok := mw.UserFrom(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	a, err := h.loadOwned(user.ID, id)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if strings.TrimSpace(a.Resume) == "" {
+		writeError(w, http.StatusNotFound, "no resume")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	req, err := h.Presign.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(h.Bucket),
+		Key:    aws.String(a.Resume),
+	}, s3.WithPresignExpires(15*time.Minute))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "presign failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"url": req.URL})
+}
+
+func (h *ApplicantsHandler) ResumeFile(w http.ResponseWriter, r *http.Request) {
+	user, ok := mw.UserFrom(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	a, err := h.loadOwned(user.ID, id)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if strings.TrimSpace(a.Resume) == "" {
+		writeError(w, http.StatusNotFound, "no resume")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	out, err := h.S3.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(h.Bucket),
+		Key:    aws.String(a.Resume),
+	})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "fetch failed")
+		return
+	}
+	defer out.Body.Close()
+	if out.ContentType != nil {
+		w.Header().Set("Content-Type", *out.ContentType)
+	} else {
+		w.Header().Set("Content-Type", "application/pdf")
+	}
+	if out.ContentLength != nil {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", *out.ContentLength))
+	}
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	_, _ = io.Copy(w, out.Body)
 }
 
 func (h *ApplicantsHandler) Delete(w http.ResponseWriter, r *http.Request) {

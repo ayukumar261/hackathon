@@ -3,6 +3,7 @@
 import { useParams } from "next/navigation";
 import { Spinner } from "@/components/ui/spinner";
 import { useSelectedApplicant } from "@/lib/hooks/useSelectedApplicant";
+import { ResumePanel } from "./components/ResumePanel";
 import { TranscriptPanel } from "./components/TranscriptPanel";
 import { TemplatePanel } from "./components/TemplatePanel";
 
@@ -26,6 +27,7 @@ export default function ApplicantDetailPage() {
 
   return (
     <div className="flex h-full min-h-0">
+      <ResumePanel applicantId={applicantId} />
       <TranscriptPanel />
       <TemplatePanel applicantId={applicantId} />
     </div>

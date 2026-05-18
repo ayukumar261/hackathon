@@ -11,6 +11,7 @@ type Position struct {
 	ID          uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`
 	UserID      uuid.UUID `gorm:"type:uuid;index;not null" json:"-"`
 	Title       string    `gorm:"not null" json:"title"`
+	Company     string    `gorm:"not null;default:'Helix Compute'" json:"company"`
 	Description string    `gorm:"not null" json:"description"`
 	CreatedAt   time.Time `json:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt"`

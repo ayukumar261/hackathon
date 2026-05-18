@@ -14,6 +14,7 @@ import (
 	"github.com/ayukumar261/hackathon/go-api/internal/oauth"
 	"github.com/ayukumar261/hackathon/go-api/internal/storage"
 	"github.com/ayukumar261/hackathon/go-api/internal/subagent"
+	"github.com/ayukumar261/hackathon/go-api/internal/supermemory"
 	"github.com/ayukumar261/hackathon/go-api/internal/templates"
 	"github.com/ayukumar261/hackathon/go-api/internal/transcripts"
 	"github.com/go-chi/chi/v5"
@@ -47,7 +48,13 @@ func main() {
 	}
 	resumes := &handlers.ResumesHandler{DB: gdb, S3: s3Client, Presign: presign, Bucket: cfg.R2Bucket}
 	positions := &handlers.PositionsHandler{DB: gdb}
-	applicants := &handlers.ApplicantsHandler{DB: gdb, AgentPhoneAPIKey: cfg.AgentPhoneAPIKey, AgentPhoneAgentID: cfg.AgentPhoneAgentID}
+	smClient := supermemory.New(cfg.SupermemoryAPIKey)
+	if smClient.Enabled() {
+		log.Printf("supermemory: enabled")
+	} else {
+		log.Printf("supermemory: disabled (SUPERMEMORY_API_KEY not set)")
+	}
+	applicants := &handlers.ApplicantsHandler{DB: gdb, AgentPhoneAPIKey: cfg.AgentPhoneAPIKey, AgentPhoneAgentID: cfg.AgentPhoneAgentID, S3: s3Client, Presign: presign, Bucket: cfg.R2Bucket, Supermemory: smClient}
 	templatesHandler := &handlers.TemplatesHandler{DB: gdb}
 
 	aiClient := aigateway.New(cfg.AIGatewayAPIKey, cfg.AgentPhoneLLMModel, cfg.AIGatewayBaseURL)
@@ -67,7 +74,7 @@ func main() {
 	templateStream := &handlers.TemplateStreamHandler{Templates: templateStore}
 	applicants.Templates = templateStore
 
-	subAgentRunner := subagent.New(subAgentAIClient, transcriptStore, templateStore)
+	subAgentRunner := subagent.New(subAgentAIClient, transcriptStore, templateStore, smClient)
 	log.Printf("subagent model: %s", cfg.SubAgentLLMModel)
 
 	apHook := &handlers.AgentPhoneWebhookHandler{
@@ -77,6 +84,7 @@ func main() {
 		Transcripts: transcriptStore,
 		Templates:   templateStore,
 		SubAgent:    subAgentRunner,
+		Supermemory: smClient,
 		StreamMode:  cfg.AgentPhoneWebhookStream,
 		MaxTurns:    cfg.AgentPhoneMaxTurns,
 		ToolLoopMax: cfg.AgentPhoneToolLoopMax,
@@ -132,6 +140,8 @@ func main() {
 		r.Post("/", applicants.Create)
 		r.Get("/", applicants.List)
 		r.Get("/{id}", applicants.Get)
+		r.Get("/{id}/resume", applicants.ResumeURL)
+		r.Get("/{id}/resume/file", applicants.ResumeFile)
 		r.Patch("/{id}", applicants.Update)
 		r.Delete("/{id}", applicants.Delete)
 		r.Post("/{id}/screen", applicants.Screen)

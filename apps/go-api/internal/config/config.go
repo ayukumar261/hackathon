@@ -32,6 +32,7 @@ type Config struct {
 	AIGatewayAPIKey         string
 	AIGatewayBaseURL        string
 	RedisURL                string
+	SupermemoryAPIKey       string
 }
 
 func Load() (*Config, error) {
@@ -61,6 +62,7 @@ func Load() (*Config, error) {
 		AIGatewayAPIKey:         os.Getenv("AI_GATEWAY_API_KEY"),
 		AIGatewayBaseURL:        os.Getenv("AI_GATEWAY_BASE_URL"),
 		RedisURL:                os.Getenv("REDIS_URL"),
+		SupermemoryAPIKey:       os.Getenv("SUPERMEMORY_API_KEY"),
 	}
 	if c.Port == "" {
 		c.Port = "8080"

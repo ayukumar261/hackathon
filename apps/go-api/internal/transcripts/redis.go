@@ -138,6 +138,14 @@ func (s *Store) AppendSubAgentInvoked(ctx context.Context, applicantID uuid.UUID
 	})
 }
 
+func (s *Store) AppendResumeSearch(ctx context.Context, applicantID uuid.UUID, query string) {
+	s.xadd(ctx, applicantID, map[string]any{
+		"role": "system",
+		"kind": "resume_search",
+		"text": query,
+	})
+}
+
 func (s *Store) AppendSubAgentCompleted(ctx context.Context, applicantID uuid.UUID, summary string) {
 	s.xadd(ctx, applicantID, map[string]any{
 		"role": "system",

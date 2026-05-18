@@ -107,7 +107,6 @@ func (h *ApplicantsHandler) Screen(w http.ResponseWriter, r *http.Request) {
 	body, err := json.Marshal(agentPhoneCallRequest{
 		AgentID:         h.AgentPhoneAgentID,
 		ToNumber:        toNumber,
-		InitialGreeting: "Hi " + a.Name + ", this is a screening call for the " + pos.Title + " role. Please hold.",
 		Metadata: map[string]string{
 			"applicantId":    a.ID.String(),
 			"jobTitle":       pos.Title,

@@ -15,6 +15,7 @@ import (
 	"github.com/ayukumar261/hackathon/go-api/internal/aigateway"
 	"github.com/ayukumar261/hackathon/go-api/internal/models"
 	"github.com/ayukumar261/hackathon/go-api/internal/subagent"
+	"github.com/ayukumar261/hackathon/go-api/internal/supermemory"
 	"github.com/ayukumar261/hackathon/go-api/internal/templates"
 	"github.com/ayukumar261/hackathon/go-api/internal/transcripts"
 	"github.com/google/uuid"
@@ -28,6 +29,7 @@ type AgentPhoneWebhookHandler struct {
 	Transcripts *transcripts.Store
 	Templates   *templates.RedisStore
 	SubAgent    *subagent.Runner
+	Supermemory *supermemory.Client
 	StreamMode  string // "sse" | "ndjson" | "off"
 	MaxTurns    int
 	ToolLoopMax int
@@ -35,6 +37,58 @@ type AgentPhoneWebhookHandler struct {
 	mu            sync.Mutex
 	turnCounts    map[string]int
 	conversations map[string]*conversationState
+	notesFired    map[uuid.UUID]bool
+}
+
+// markNotesFired returns true if this is the first time we're firing the post-call
+// notes sub-agent for this applicant (i.e. caller should fire). Idempotent so the
+// end_call tool path and the call_ended webhook don't both kick it off.
+func (h *AgentPhoneWebhookHandler) markNotesFired(applicantID uuid.UUID) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.notesFired == nil {
+		h.notesFired = map[uuid.UUID]bool{}
+	}
+	if h.notesFired[applicantID] {
+		return false
+	}
+	h.notesFired[applicantID] = true
+	return true
+}
+
+func (h *AgentPhoneWebhookHandler) firePostCallNotes(applicantID uuid.UUID, callSummary string) {
+	if h.SubAgent == nil || applicantID == uuid.Nil {
+		return
+	}
+	if !h.markNotesFired(applicantID) {
+		return
+	}
+	task := "The call has ended. You MUST update the existing \"Agent Notes (post-call)\" section " +
+		"of the screening report — this is not optional. Call read_template first to see the exact " +
+		"bullet structure, then call patch_template ONCE with section=\"Agent Notes (post-call)\" " +
+		"and new_content that keeps the same bullet fields, filling each one.\n\n" +
+		"How to fill each field:\n" +
+		"- Candidate name, Role, Date of call: copy from the report header / today's date.\n" +
+		"- Compensation expectations, Earliest start date, Work authorization: extract verbatim from the transcript. Use [unknown] only if truly never discussed.\n" +
+		"- Overall fit (1–5), Strengths, Concerns or gaps, Recommendation (Advance / Hold / Pass), Additional notes: YOU must form a judgment from the transcript. Do not leave these as [unknown] or placeholders — make a call based on the evidence, even if the signal is thin. For Recommendation, pick exactly one of Advance / Hold / Pass and mark it with [x].\n\n" +
+		"Do NOT add new headings, sub-sections, or extra bullets — only fill in the existing fields.\n\n" +
+		"Agent's own call summary: " + callSummary
+	if h.Transcripts != nil {
+		h.Transcripts.AppendSubAgentInvoked(context.Background(), applicantID, task)
+	}
+	go func() {
+		ctx2 := context.Background()
+		summary, err := h.SubAgent.Run(ctx2, applicantID, task)
+		if err != nil {
+			summary = "error: " + err.Error()
+		} else if summary == "" {
+			summary = "done"
+		}
+		log.Printf("agentphone webhook: post-call sub-agent finished summary=%q", summary)
+		if h.Transcripts != nil {
+			h.Transcripts.AppendSubAgentCompleted(ctx2, applicantID, summary)
+		}
+	}()
 }
 
 type conversationState struct {
@@ -139,6 +193,10 @@ func (h *AgentPhoneWebhookHandler) handleMessage(w http.ResponseWriter, r *http.
 		}
 	}
 	system := buildSystemPrompt(applicant, tmplContent)
+	if applicant != nil {
+		log.Printf("agentphone webhook: system prompt built applicant=%s pos_title=%q pos_desc_len=%d sys_len=%d",
+			applicant.ID, applicant.Position.Title, len(applicant.Position.Description), len(system))
+	}
 
 	var applicantID uuid.UUID
 	if applicant != nil {
@@ -319,6 +377,10 @@ func (h *AgentPhoneWebhookHandler) runAgentLoop(ctx context.Context, applicantID
 					h.Transcripts.AppendAssistantToken(ctx, applicantID, rep.Text)
 					h.Transcripts.AppendAssistantTurnEnd(ctx, applicantID, rep.Text)
 				}
+				// Kick off the post-call notes sub-agent immediately so it can start
+				// reading the transcript while AgentPhone hangs up the line. The
+				// call_ended webhook will be a no-op for this thanks to markNotesFired.
+				h.firePostCallNotes(applicantID, "")
 				terminalReply = &rep
 				break
 			}
@@ -356,6 +418,23 @@ func (h *AgentPhoneWebhookHandler) runAgentLoop(ctx context.Context, applicantID
 					ToolCallID: tc.ID,
 					Name:       tc.Function.Name,
 					Content:    `{"status":"started","note":"sub-agent running asynchronously; do not wait for result"}`,
+				})
+				continue
+			}
+			if tc.Function.Name == agentphone.ToolSearchResume {
+				args, perr := agentphone.ParseSearchResume(tc.Function.Arguments)
+				if perr != nil {
+					log.Printf("agentphone webhook: search_resume parse error: %v args=%q", perr, tc.Function.Arguments)
+				}
+				if h.Transcripts != nil && applicantID != uuid.Nil {
+					h.Transcripts.AppendResumeSearch(ctx, applicantID, args.Query)
+				}
+				result := h.runSearchResume(ctx, applicantID, args.Query)
+				convo = append(convo, aigateway.Message{
+					Role:       "tool",
+					ToolCallID: tc.ID,
+					Name:       tc.Function.Name,
+					Content:    result,
 				})
 				continue
 			}
@@ -450,35 +529,9 @@ func (h *AgentPhoneWebhookHandler) handleCallEnded(w http.ResponseWriter, r *htt
 	if err := h.DB.Model(&models.Applicant{}).Where("id = ?", applicant.ID).Updates(updates).Error; err != nil {
 		log.Printf("agentphone webhook: persist transcript: %v", err)
 	}
-	if h.SubAgent != nil {
-		task := "The call has ended. You MUST update the existing \"Agent Notes (post-call)\" section " +
-			"of the screening report — this is not optional. Call read_template first to see the exact " +
-			"bullet structure, then call patch_template ONCE with section=\"Agent Notes (post-call)\" " +
-			"and new_content that keeps the same bullet fields, filling each one.\n\n" +
-			"How to fill each field:\n" +
-			"- Candidate name, Role, Date of call: copy from the report header / today's date.\n" +
-			"- Compensation expectations, Earliest start date, Work authorization: extract verbatim from the transcript. Use [unknown] only if truly never discussed.\n" +
-			"- Overall fit (1–5), Strengths, Concerns or gaps, Recommendation (Advance / Hold / Pass), Additional notes: YOU must form a judgment from the transcript. Do not leave these as [unknown] or placeholders — make a call based on the evidence, even if the signal is thin. For Recommendation, pick exactly one of Advance / Hold / Pass and mark it with [x].\n\n" +
-			"Do NOT add new headings, sub-sections, or extra bullets — only fill in the existing fields.\n\n" +
-			"Agent's own call summary: " + evt.Data.Summary
-		applicantID := applicant.ID
-		if h.Transcripts != nil {
-			h.Transcripts.AppendSubAgentInvoked(context.Background(), applicantID, task)
-		}
-		go func() {
-			ctx2 := context.Background()
-			summary, err := h.SubAgent.Run(ctx2, applicantID, task)
-			if err != nil {
-				summary = "error: " + err.Error()
-			} else if summary == "" {
-				summary = "done"
-			}
-			log.Printf("agentphone webhook: post-call sub-agent finished summary=%q", summary)
-			if h.Transcripts != nil {
-				h.Transcripts.AppendSubAgentCompleted(ctx2, applicantID, summary)
-			}
-		}()
-	}
+	// Fallback: if the primary never called end_call, fire the notes runner here.
+	// If end_call already fired it, markNotesFired makes this a no-op.
+	h.firePostCallNotes(applicant.ID, evt.Data.Summary)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -535,6 +588,24 @@ func buildSystemPrompt(a *models.Applicant, template string) string {
 		b.WriteString("You are a friendly phone screener calling ")
 		b.WriteString(a.Name)
 		b.WriteString(" about a job application. Keep replies short, conversational, and one or two sentences. Ask one question at a time.\n")
+		b.WriteString("Your name is Skylar. On your very first turn, introduce yourself by name (\"Hi, this is Skylar…\"), say you are calling about the \"")
+		if a.Position.Title != "" {
+			b.WriteString(a.Position.Title)
+		} else {
+			b.WriteString("[role]")
+		}
+		companyName := a.Position.Company
+		if companyName == "" {
+			companyName = "our team"
+		}
+		b.WriteString("\" position at ")
+		b.WriteString(companyName)
+		b.WriteString(", and briefly explain why you are calling — this is an initial phone screen to learn about their background, share more about the role, and see if there is mutual interest. Then confirm it is a good time to talk before asking your first guide question.\n")
+		if a.Position.Company != "" {
+			b.WriteString("Company: ")
+			b.WriteString(a.Position.Company)
+			b.WriteString("\n")
+		}
 		if a.Position.Title != "" {
 			b.WriteString("Position: ")
 			b.WriteString(a.Position.Title)
@@ -555,11 +626,22 @@ func buildSystemPrompt(a *models.Applicant, template string) string {
 		b.WriteString("\nScreening guide (work through these in order, one question per turn, follow up naturally before moving on; skip a question if the candidate already answered it):\n")
 		b.WriteString(template)
 		b.WriteString("\n")
+		b.WriteString("Pacing rules (strict):\n")
+		b.WriteString("- Resume Walkthrough / Candidate Background: ask at MOST 2 questions total (one open walk-through question + one targeted follow-up), then move on. Do not chase additional follow-ups even if interesting — capture details via invoke_subagent and advance.\n")
+		b.WriteString("- Every other section: at most 2 questions before moving on.\n")
+		b.WriteString("- You MUST reach the compensation/logistics section. If you notice you've asked 2+ questions in the current section, advance to the next section on your next turn even if you have unresolved curiosity.\n")
 		b.WriteString("When all guide items are covered, call end_call with reason=screening_complete.\n")
 	}
-	b.WriteString("\nYou have two tools available:\n")
+	b.WriteString("\nYou have three tools available:\n")
+	b.WriteString("- search_resume(query): semantic search over the candidate's actual resume. Returns the most relevant excerpts. Use this whenever you want to ground a follow-up question in real resume details (a past role, a project, a skill, education).\n")
 	b.WriteString("- invoke_subagent(task): delegates a background write to a smaller agent that reads the live transcript and patches the screening report. Returns immediately; do not wait.\n")
 	b.WriteString("- end_call(reason, closing_message?): end the phone call.\n")
+	b.WriteString("\nUsing search_resume:\n")
+	b.WriteString("- ONLY use search_resume while you are working through the \"Resume Walkthrough\" section of the screening guide (a.k.a. Candidate Background), and AT MOST ONCE in that section. Do NOT call it during the intro, motivation, logistics, compensation, Q&A, or wrap-up sections.\n")
+	b.WriteString("- During the Resume Walkthrough, use it to draft sharp, resume-grounded follow-up questions about prior roles, projects, or transitions. Outside that section, rely on the transcript and the candidate's own answers — never call search_resume.\n")
+	b.WriteString("- Narrate the lookup in the SAME turn you call it so the candidate isn't left in silence. Say something brief like \"Let me take a quick look at your resume…\".\n")
+	b.WriteString("- Keep queries short and specific (e.g. \"most recent role and dates\", \"React or frontend experience\", \"transitions between roles\"). One query per turn is plenty.\n")
+	b.WriteString("- After you receive the snippet, ask a sharp follow-up that references what you found. Do not read the resume back verbatim.\n")
 	b.WriteString("\nCall invoke_subagent after EVERY applicant turn that yields a fact relevant to the screening guide — compensation expectations, years of experience, specific skills, availability/start date, location, work authorization, willingness to relocate, etc. Emit the invoke_subagent tool call in the SAME turn as your spoken reply, with `task` describing exactly what to record. Example: if the applicant says \"I want five hundred thousand dollars a year\", call invoke_subagent with task=\"record applicant's total compensation expectation: $500,000/year\". If a single turn contains multiple distinct facts, emit one invoke_subagent call per fact. Do not wait for results; your spoken reply stays one short sentence and moves to the next guide question. Skip invoke_subagent only when the applicant turn is pure smalltalk, filler, or a clarifying question with no new information.\n")
 	b.WriteString("\nAlso call invoke_subagent eagerly whenever the caller asks you to look something up, research a topic, think through options, draft something, or \"spin up\" / \"use\" sub-agents. If the caller explicitly asks for multiple sub-agents (e.g. \"use two sub agents to research X and Y\"), emit one invoke_subagent tool call per topic in the same turn. Do this even if the topic is off-topic from the screening — fire the sub-agents, then in your spoken reply briefly acknowledge it and steer back to the job questions in one short sentence. Never refuse to spin up sub-agents.\n")
 	b.WriteString("\nCall end_call when: the screening questions are all answered (reason=screening_complete, include a brief closing_message thanking the candidate), the applicant asks to stop or declines (applicant_declined, with a polite closing_message), you detect voicemail or a long silence (voicemail, omit closing_message), or the conversation is hostile/off-topic and not recoverable (off_topic or safety).\n")
@@ -593,6 +675,32 @@ func buildMessages(evt *webhookEvent) []aigateway.Message {
 		text = "(caller said nothing)"
 	}
 	return []aigateway.Message{{Role: "user", Content: text}}
+}
+
+func (h *AgentPhoneWebhookHandler) runSearchResume(ctx context.Context, applicantID uuid.UUID, query string) string {
+	if h.Supermemory == nil || !h.Supermemory.Enabled() {
+		return `{"error":"resume search not configured"}`
+	}
+	if applicantID == uuid.Nil {
+		return `{"error":"no applicant context"}`
+	}
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return `{"error":"empty query"}`
+	}
+	sctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	tag := "applicant:" + applicantID.String()
+	snippet, err := h.Supermemory.Search(sctx, tag, q, 3)
+	if err != nil {
+		log.Printf("agentphone webhook: search_resume failed applicant=%s: %v", applicantID, err)
+		return fmt.Sprintf(`{"error":%q}`, err.Error())
+	}
+	if strings.TrimSpace(snippet) == "" {
+		return `{"results":"","note":"no relevant resume content found"}`
+	}
+	b, _ := json.Marshal(map[string]string{"results": snippet})
+	return string(b)
 }
 
 func firstNonEmpty(vs ...string) string {

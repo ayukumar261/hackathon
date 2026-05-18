@@ -9,7 +9,20 @@ import (
 const (
 	ToolEndCall        = "end_call"
 	ToolInvokeSubAgent = "invoke_subagent"
+	ToolSearchResume   = "search_resume"
 )
+
+var searchResumeParams = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "query": {
+      "type": "string",
+      "description": "Natural-language question about the candidate's resume (e.g. 'most recent role and dates', 'React experience', 'education')."
+    }
+  },
+  "required": ["query"],
+  "additionalProperties": false
+}`)
 
 var invokeSubAgentParams = json.RawMessage(`{
   "type": "object",
@@ -58,7 +71,28 @@ func Tools() []aigateway.Tool {
 				Parameters:  invokeSubAgentParams,
 			},
 		},
+		{
+			Type: "function",
+			Function: aigateway.ToolFunction{
+				Name:        ToolSearchResume,
+				Description: "Look up information from the candidate's resume via semantic search. Use BEFORE asking specific follow-ups about prior roles, projects, skills, or education so your questions reference real details from the resume. Returns top relevant excerpts.",
+				Parameters:  searchResumeParams,
+			},
+		},
 	}
+}
+
+type SearchResumeArgs struct {
+	Query string `json:"query"`
+}
+
+func ParseSearchResume(arguments string) (SearchResumeArgs, error) {
+	var a SearchResumeArgs
+	if arguments == "" {
+		return a, nil
+	}
+	err := json.Unmarshal([]byte(arguments), &a)
+	return a, err
 }
 
 type EndCallArgs struct {
