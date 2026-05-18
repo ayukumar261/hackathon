@@ -47,19 +47,21 @@ export default function DashboardLayout({
   return (
     <SelectedPositionProvider>
       <SelectedApplicantProvider>
-        <nav className="sticky top-0 z-10 flex items-center justify-between border-b border-foreground/5 bg-white px-4 py-3">
-          <PositionSelect />
-          <div className="flex items-center gap-2">
-            <SetTemplateDialog />
-            <Button variant="outline" disabled={signingOut} onClick={handleSignOut}>
-              <LogOut />
-              {signingOut ? "Signing out…" : "Sign out"}
-            </Button>
+        <div className="flex flex-col h-screen">
+          <nav className="flex items-center justify-between border-b border-foreground/5 bg-white px-4 py-3">
+            <PositionSelect />
+            <div className="flex items-center gap-2">
+              <SetTemplateDialog />
+              <Button variant="outline" disabled={signingOut} onClick={handleSignOut}>
+                <LogOut />
+                {signingOut ? "Signing out…" : "Sign out"}
+              </Button>
+            </div>
+          </nav>
+          <div className="flex flex-1 min-h-0">
+            <ApplicantsSidebar />
+            <main className="flex-1 min-h-0 overflow-hidden">{children}</main>
           </div>
-        </nav>
-        <div className="flex">
-          <ApplicantsSidebar />
-          <main className="flex-1">{children}</main>
         </div>
       </SelectedApplicantProvider>
     </SelectedPositionProvider>

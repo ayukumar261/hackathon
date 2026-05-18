@@ -1,12 +1,8 @@
 "use client";
 
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Download } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import { Markdown } from "@/components/markdown";
 import { useTemplateStream } from "@/lib/hooks/useTemplateStream";
 
@@ -14,30 +10,38 @@ export function TemplatePanel({ applicantId }: { applicantId: string }) {
   const { content, connected } = useTemplateStream(applicantId);
 
   return (
-    <Card className="flex h-[calc(100vh-9rem)] flex-col">
-      <CardHeader className="flex flex-row items-center justify-between border-b">
-        <CardTitle>Screening template</CardTitle>
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+    <div className="flex-1 min-w-0 h-full overflow-y-auto bg-white">
+      <header className="sticky top-0 z-10 bg-white border-b border-foreground/5 px-4 py-3 flex items-center justify-between min-h-12 no-print">
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-medium">Screening Document</h2>
           <span
             className={cn(
               "inline-block size-2 rounded-full",
               connected ? "bg-emerald-500 animate-pulse" : "bg-gray-400",
             )}
           />
-          {connected ? "live" : "offline"}
         </div>
-      </CardHeader>
-      <CardContent className="flex-1 overflow-hidden p-0">
-        <div className="h-full overflow-y-auto px-4 py-3">
-          {content ? (
-            <Markdown>{content}</Markdown>
-          ) : (
-            <p className="text-sm text-muted-foreground text-center mt-8">
-              No template yet. Start a screening call to load it.
-            </p>
-          )}
-        </div>
-      </CardContent>
-    </Card>
+        <Button
+          variant="ghost"
+          size="icon"
+          disabled={!content}
+          onClick={() => window.print()}
+          aria-label="Download as PDF"
+          title="Download as PDF"
+          className="h-7 w-7"
+        >
+          <Download />
+        </Button>
+      </header>
+      <div id="template-print-area" className="px-4 py-3">
+        {content ? (
+          <Markdown>{content}</Markdown>
+        ) : (
+          <p className="text-sm text-muted-foreground text-center mt-8">
+            No template yet. Start a screening call to load it.
+          </p>
+        )}
+      </div>
+    </div>
   );
 }

@@ -11,7 +11,7 @@ type MarkdownProps = {
 
 export function Markdown({ children, className }: MarkdownProps) {
   return (
-    <div className={cn("text-sm leading-relaxed text-foreground", className)}>
+    <div className={cn("text-sm leading-relaxed text-foreground [&>*:first-child]:mt-2", className)}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{

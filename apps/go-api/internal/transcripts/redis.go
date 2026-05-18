@@ -130,21 +130,52 @@ func (s *Store) Delete(ctx context.Context, applicantID uuid.UUID) error {
 	return s.Client.Del(ctx, streamKey(applicantID)).Err()
 }
 
-func (s *Store) AppendSubAgentInvoked(ctx context.Context, applicantID uuid.UUID, kind, task string) {
-	text := task
-	if kind != "" {
-		if task != "" {
-			text = kind + ": " + task
-		} else {
-			text = kind
-		}
-	}
+func (s *Store) AppendSubAgentInvoked(ctx context.Context, applicantID uuid.UUID, task string) {
 	s.xadd(ctx, applicantID, map[string]any{
-		"role":       "system",
-		"kind":       "sub_agent_invoked",
-		"text":       text,
-		"agent_kind": kind,
+		"role": "system",
+		"kind": "sub_agent_invoked",
+		"text": task,
 	})
+}
+
+func (s *Store) AppendSubAgentCompleted(ctx context.Context, applicantID uuid.UUID, summary string) {
+	s.xadd(ctx, applicantID, map[string]any{
+		"role": "system",
+		"kind": "sub_agent_completed",
+		"text": summary,
+	})
+}
+
+// ReadRecent returns up to `count` most-recent entries (non-blocking).
+func (s *Store) ReadRecent(ctx context.Context, applicantID uuid.UUID, count int64) ([]Entry, error) {
+	if s == nil || s.Client == nil || applicantID == uuid.Nil {
+		return nil, nil
+	}
+	msgs, err := s.Client.XRevRangeN(ctx, streamKey(applicantID), "+", "-", count).Result()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Entry, 0, len(msgs))
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msg := msgs[i]
+		e := Entry{ID: msg.ID}
+		if v, ok := msg.Values["role"].(string); ok {
+			e.Role = v
+		}
+		if v, ok := msg.Values["kind"].(string); ok {
+			e.Kind = v
+		}
+		if v, ok := msg.Values["text"].(string); ok {
+			e.Text = v
+		}
+		if v, ok := msg.Values["ts"].(string); ok {
+			if n, perr := strconv.ParseInt(v, 10, 64); perr == nil {
+				e.TS = n
+			}
+		}
+		out = append(out, e)
+	}
+	return out, nil
 }
 
 func (s *Store) AppendCallEnded(ctx context.Context, applicantID uuid.UUID, text string) {

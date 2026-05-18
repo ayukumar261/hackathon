@@ -25,8 +25,8 @@ export default function ApplicantDetailPage() {
   }
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4">
-      <TranscriptPanel applicantId={applicantId} />
+    <div className="flex h-full min-h-0">
+      <TranscriptPanel />
       <TemplatePanel applicantId={applicantId} />
     </div>
   );

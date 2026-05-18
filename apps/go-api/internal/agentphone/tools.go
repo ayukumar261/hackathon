@@ -14,17 +14,12 @@ const (
 var invokeSubAgentParams = json.RawMessage(`{
   "type": "object",
   "properties": {
-    "kind": {
-      "type": "string",
-      "enum": ["decide", "compose"],
-      "description": "Which sub-agent to invoke: 'decide' for a decision-making helper, 'compose' for drafting/composition."
-    },
     "task": {
       "type": "string",
-      "description": "Short description of what the sub-agent should work on."
+      "description": "Short description of what the sub-agent should update in the screening report (e.g. 'record applicant's years of React experience')."
     }
   },
-  "required": ["kind", "task"],
+  "required": ["task"],
   "additionalProperties": false
 }`)
 
@@ -59,7 +54,7 @@ func Tools() []aigateway.Tool {
 			Type: "function",
 			Function: aigateway.ToolFunction{
 				Name:        ToolInvokeSubAgent,
-				Description: "Delegate background work (decision-making or composition) to a smaller agent without pausing the conversation. Returns immediately; results are not awaited on this turn. Use this instead of thinking through complex side tasks inline so the caller is not left waiting.",
+				Description: "Record a fact from the live call into the screening report. Call this after every applicant turn that contains screening-relevant information (compensation, experience, skills, availability, etc.). Returns immediately; do not wait for the result.",
 				Parameters:  invokeSubAgentParams,
 			},
 		},
@@ -81,7 +76,6 @@ func ParseEndCall(arguments string) (EndCallArgs, error) {
 }
 
 type InvokeSubAgentArgs struct {
-	Kind string `json:"kind"`
 	Task string `json:"task"`
 }
 

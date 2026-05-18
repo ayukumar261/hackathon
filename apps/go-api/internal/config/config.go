@@ -26,6 +26,7 @@ type Config struct {
 	AgentPhoneWebhookSecret string
 	AgentPhoneWebhookStream string
 	AgentPhoneLLMModel      string
+	SubAgentLLMModel        string
 	AgentPhoneMaxTurns      int
 	AgentPhoneToolLoopMax   int
 	AIGatewayAPIKey         string
@@ -54,6 +55,7 @@ func Load() (*Config, error) {
 		AgentPhoneWebhookSecret: os.Getenv("AGENTPHONE_WEBHOOK_SECRET"),
 		AgentPhoneWebhookStream: os.Getenv("AGENTPHONE_WEBHOOK_STREAM"),
 		AgentPhoneLLMModel:      os.Getenv("AGENTPHONE_LLM_MODEL"),
+		SubAgentLLMModel:        os.Getenv("SUBAGENT_LLM_MODEL"),
 		AgentPhoneMaxTurns:      atoiOr(os.Getenv("AGENTPHONE_MAX_TURNS"), 40),
 		AgentPhoneToolLoopMax:   atoiOr(os.Getenv("AGENTPHONE_TOOL_LOOP_MAX"), 5),
 		AIGatewayAPIKey:         os.Getenv("AI_GATEWAY_API_KEY"),
@@ -68,6 +70,9 @@ func Load() (*Config, error) {
 	}
 	if c.AgentPhoneLLMModel == "" {
 		c.AgentPhoneLLMModel = "openai/gpt-4o-mini"
+	}
+	if c.SubAgentLLMModel == "" {
+		c.SubAgentLLMModel = "anthropic/claude-haiku-4-5"
 	}
 	if c.AIGatewayBaseURL == "" {
 		c.AIGatewayBaseURL = "https://ai-gateway.vercel.sh/v1"

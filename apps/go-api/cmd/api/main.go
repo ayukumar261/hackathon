@@ -13,6 +13,7 @@ import (
 	mw "github.com/ayukumar261/hackathon/go-api/internal/middleware"
 	"github.com/ayukumar261/hackathon/go-api/internal/oauth"
 	"github.com/ayukumar261/hackathon/go-api/internal/storage"
+	"github.com/ayukumar261/hackathon/go-api/internal/subagent"
 	"github.com/ayukumar261/hackathon/go-api/internal/templates"
 	"github.com/ayukumar261/hackathon/go-api/internal/transcripts"
 	"github.com/go-chi/chi/v5"
@@ -50,6 +51,7 @@ func main() {
 	templatesHandler := &handlers.TemplatesHandler{DB: gdb}
 
 	aiClient := aigateway.New(cfg.AIGatewayAPIKey, cfg.AgentPhoneLLMModel, cfg.AIGatewayBaseURL)
+	subAgentAIClient := aigateway.New(cfg.AIGatewayAPIKey, cfg.SubAgentLLMModel, cfg.AIGatewayBaseURL)
 
 	redisOpts, err := redis.ParseURL(cfg.RedisURL)
 	if err != nil {
@@ -65,11 +67,16 @@ func main() {
 	templateStream := &handlers.TemplateStreamHandler{Templates: templateStore}
 	applicants.Templates = templateStore
 
+	subAgentRunner := subagent.New(subAgentAIClient, transcriptStore, templateStore)
+	log.Printf("subagent model: %s", cfg.SubAgentLLMModel)
+
 	apHook := &handlers.AgentPhoneWebhookHandler{
 		DB:          gdb,
 		Secret:      cfg.AgentPhoneWebhookSecret,
 		AI:          aiClient,
 		Transcripts: transcriptStore,
+		Templates:   templateStore,
+		SubAgent:    subAgentRunner,
 		StreamMode:  cfg.AgentPhoneWebhookStream,
 		MaxTurns:    cfg.AgentPhoneMaxTurns,
 		ToolLoopMax: cfg.AgentPhoneToolLoopMax,

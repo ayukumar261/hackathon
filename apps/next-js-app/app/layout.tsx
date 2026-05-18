@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import { Toaster } from "sonner";
 import SWRProvider from "@/providers/SWRProvider";
 
 const inter = Inter({
@@ -30,6 +31,7 @@ export default function RootLayout({
     >
       <body className="min-h-full flex flex-col">
         <SWRProvider>{children}</SWRProvider>
+        <Toaster position="top-center" richColors closeButton />
       </body>
     </html>
   );

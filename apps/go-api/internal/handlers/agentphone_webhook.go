@@ -14,6 +14,8 @@ import (
 	"github.com/ayukumar261/hackathon/go-api/internal/agentphone"
 	"github.com/ayukumar261/hackathon/go-api/internal/aigateway"
 	"github.com/ayukumar261/hackathon/go-api/internal/models"
+	"github.com/ayukumar261/hackathon/go-api/internal/subagent"
+	"github.com/ayukumar261/hackathon/go-api/internal/templates"
 	"github.com/ayukumar261/hackathon/go-api/internal/transcripts"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -24,13 +26,24 @@ type AgentPhoneWebhookHandler struct {
 	Secret      string
 	AI          aigateway.Streamer
 	Transcripts *transcripts.Store
+	Templates   *templates.RedisStore
+	SubAgent    *subagent.Runner
 	StreamMode  string // "sse" | "ndjson" | "off"
 	MaxTurns    int
 	ToolLoopMax int
 
-	mu         sync.Mutex
-	turnCounts map[string]int
+	mu            sync.Mutex
+	turnCounts    map[string]int
+	conversations map[string]*conversationState
 }
+
+type conversationState struct {
+	messages     []aigateway.Message
+	lastUserText string
+	lastUserAt   time.Time
+}
+
+const userDedupWindow = 3 * time.Second
 
 type transcriptTurn struct {
 	Role    string `json:"role"`
@@ -119,25 +132,38 @@ func (h *AgentPhoneWebhookHandler) Handle(w http.ResponseWriter, r *http.Request
 
 func (h *AgentPhoneWebhookHandler) handleMessage(w http.ResponseWriter, r *http.Request, evt *webhookEvent) {
 	applicant := h.resolveApplicant(evt)
-	system := buildSystemPrompt(applicant)
-	msgs := buildMessages(evt)
+	tmplContent := templates.DefaultContent
+	if h.Templates != nil && applicant != nil {
+		if c, ok, err := h.Templates.Get(r.Context(), applicant.ID); err == nil && ok && strings.TrimSpace(c) != "" {
+			tmplContent = c
+		}
+	}
+	system := buildSystemPrompt(applicant, tmplContent)
 
 	var applicantID uuid.UUID
 	if applicant != nil {
 		applicantID = applicant.ID
 	}
 
-	if h.Transcripts != nil && applicantID != uuid.Nil {
-		userText := strings.TrimSpace(evt.Message.Text)
-		if userText == "" {
-			userText = strings.TrimSpace(evt.Message.Content)
+	userText := strings.TrimSpace(evt.Message.Text)
+	if userText == "" {
+		userText = strings.TrimSpace(evt.Message.Content)
+	}
+	if userText == "" && len(evt.RecentHistory) > 0 {
+		last := evt.RecentHistory[len(evt.RecentHistory)-1]
+		if last.Role == "" || last.Role == "user" || last.Role == "caller" {
+			userText = strings.TrimSpace(firstNonEmpty(last.Content, last.Text))
 		}
-		if userText == "" && len(evt.RecentHistory) > 0 {
-			last := evt.RecentHistory[len(evt.RecentHistory)-1]
-			if last.Role == "" || last.Role == "user" || last.Role == "caller" {
-				userText = strings.TrimSpace(firstNonEmpty(last.Content, last.Text))
-			}
-		}
+	}
+
+	callID := evt.Data.CallID
+	if h.isDuplicateUserText(callID, userText) {
+		log.Printf("agentphone webhook: dedup near-duplicate user utterance callId=%s text=%q", callID, userText)
+		h.emit(w, agentReply{})
+		return
+	}
+
+	if h.Transcripts != nil && applicantID != uuid.Nil && userText != "" {
 		h.Transcripts.AppendUserUtterance(r.Context(), applicantID, userText)
 	}
 
@@ -145,22 +171,105 @@ func (h *AgentPhoneWebhookHandler) handleMessage(w http.ResponseWriter, r *http.
 	if maxTurns <= 0 {
 		maxTurns = defaultMaxTurns
 	}
-	if turns := h.bumpTurn(evt.Data.CallID); turns > maxTurns {
-		log.Printf("agentphone webhook: turn cap hit for callId=%s turns=%d", evt.Data.CallID, turns)
+	if turns := h.bumpTurn(callID); turns > maxTurns {
+		log.Printf("agentphone webhook: turn cap hit for callId=%s turns=%d", callID, turns)
 		h.emit(w, agentReply{Text: forcedClosingReply, Hangup: true})
 		return
 	}
 
-	reply, err := h.runAgentLoop(r.Context(), applicantID, system, msgs)
+	convo := h.loadConvo(callID, evt, userText)
+	updated, reply, err := h.runAgentLoop(r.Context(), applicantID, system, convo)
 	if err != nil {
 		log.Printf("agentphone webhook: ai error: %v", err)
 		h.emit(w, agentReply{Text: safeFallbackReply})
 		return
 	}
+	h.saveConvo(callID, updated, userText)
 	h.emit(w, reply)
 }
 
-func (h *AgentPhoneWebhookHandler) runAgentLoop(ctx context.Context, applicantID uuid.UUID, system string, msgs []aigateway.Message) (agentReply, error) {
+func (h *AgentPhoneWebhookHandler) isDuplicateUserText(callID, text string) bool {
+	if callID == "" || text == "" {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	st := h.conversations[callID]
+	if st == nil || st.lastUserText == "" {
+		return false
+	}
+	if time.Since(st.lastUserAt) > userDedupWindow {
+		return false
+	}
+	a, b := st.lastUserText, text
+	if a == b || strings.HasPrefix(a, b) || strings.HasPrefix(b, a) {
+		return true
+	}
+	return false
+}
+
+func (h *AgentPhoneWebhookHandler) loadConvo(callID string, evt *webhookEvent, userText string) []aigateway.Message {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.conversations == nil {
+		h.conversations = map[string]*conversationState{}
+	}
+	st := h.conversations[callID]
+	if st != nil && len(st.messages) > 0 {
+		out := append([]aigateway.Message{}, st.messages...)
+		if userText != "" {
+			out = append(out, aigateway.Message{Role: "user", Content: userText})
+		}
+		return out
+	}
+	// First turn for this call: seed from provider's RecentHistory (or fall back to the message).
+	seeded := buildMessages(evt)
+	if userText != "" {
+		needAppend := true
+		if len(seeded) > 0 {
+			last := seeded[len(seeded)-1]
+			if last.Role == "user" && strings.TrimSpace(last.Content) == userText {
+				needAppend = false
+			}
+		}
+		if needAppend {
+			seeded = append(seeded, aigateway.Message{Role: "user", Content: userText})
+		}
+	}
+	return seeded
+}
+
+func (h *AgentPhoneWebhookHandler) saveConvo(callID string, messages []aigateway.Message, userText string) {
+	if callID == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.conversations == nil {
+		h.conversations = map[string]*conversationState{}
+	}
+	st := h.conversations[callID]
+	if st == nil {
+		st = &conversationState{}
+		h.conversations[callID] = st
+	}
+	st.messages = messages
+	if userText != "" {
+		st.lastUserText = userText
+		st.lastUserAt = time.Now()
+	}
+}
+
+func (h *AgentPhoneWebhookHandler) clearConvo(callID string) {
+	if callID == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.conversations, callID)
+}
+
+func (h *AgentPhoneWebhookHandler) runAgentLoop(ctx context.Context, applicantID uuid.UUID, system string, msgs []aigateway.Message) ([]aigateway.Message, agentReply, error) {
 	loopMax := h.ToolLoopMax
 	if loopMax <= 0 {
 		loopMax = defaultToolLoopMax
@@ -177,7 +286,7 @@ func (h *AgentPhoneWebhookHandler) runAgentLoop(ctx context.Context, applicantID
 		}
 		content, toolCalls, err := h.AI.StreamChatWithTools(ctx, system, convo, tools, onToken)
 		if err != nil {
-			return agentReply{}, err
+			return convo, agentReply{}, err
 		}
 		if h.Transcripts != nil && applicantID != uuid.Nil && strings.TrimSpace(content) != "" {
 			h.Transcripts.AppendAssistantTurnEnd(ctx, applicantID, content)
@@ -187,7 +296,8 @@ func (h *AgentPhoneWebhookHandler) runAgentLoop(ctx context.Context, applicantID
 			if text == "" {
 				text = safeFallbackReply
 			}
-			return agentReply{Text: text}, nil
+			convo = append(convo, aigateway.Message{Role: "assistant", Content: content})
+			return convo, agentReply{Text: text}, nil
 		}
 
 		// Record the assistant turn with its tool_calls so any tool messages we append are valid.
@@ -218,13 +328,29 @@ func (h *AgentPhoneWebhookHandler) runAgentLoop(ctx context.Context, applicantID
 					log.Printf("agentphone webhook: invoke_subagent parse error: %v args=%q", perr, tc.Function.Arguments)
 				}
 				if h.Transcripts != nil && applicantID != uuid.Nil {
-					h.Transcripts.AppendSubAgentInvoked(context.Background(), applicantID, args.Kind, args.Task)
+					h.Transcripts.AppendSubAgentInvoked(context.Background(), applicantID, args.Task)
 				}
-				go func(kind, task string) {
-					log.Printf("agentphone webhook: sub-agent invoked kind=%q task=%q (placeholder)", kind, task)
-					time.Sleep(2 * time.Second)
-					log.Printf("agentphone webhook: sub-agent finished kind=%q (placeholder)", kind)
-				}(args.Kind, args.Task)
+				go func(task string) {
+					ctx2 := context.Background()
+					log.Printf("agentphone webhook: sub-agent invoked task=%q", task)
+					var summary string
+					if h.SubAgent == nil {
+						summary = "sub-agent not configured"
+					} else {
+						s, err := h.SubAgent.Run(ctx2, applicantID, task)
+						if err != nil {
+							summary = "error: " + err.Error()
+						} else if s == "" {
+							summary = "done"
+						} else {
+							summary = s
+						}
+					}
+					log.Printf("agentphone webhook: sub-agent finished task=%q summary=%q", task, summary)
+					if h.Transcripts != nil && applicantID != uuid.Nil {
+						h.Transcripts.AppendSubAgentCompleted(ctx2, applicantID, summary)
+					}
+				}(args.Task)
 				convo = append(convo, aigateway.Message{
 					Role:       "tool",
 					ToolCallID: tc.ID,
@@ -242,11 +368,11 @@ func (h *AgentPhoneWebhookHandler) runAgentLoop(ctx context.Context, applicantID
 			})
 		}
 		if terminalReply != nil {
-			return *terminalReply, nil
+			return convo, *terminalReply, nil
 		}
 	}
 	log.Printf("agentphone webhook: tool loop cap exhausted")
-	return agentReply{Text: forcedClosingReply, Hangup: true}, nil
+	return convo, agentReply{Text: forcedClosingReply, Hangup: true}, nil
 }
 
 func buildEndCallReply(args agentphone.EndCallArgs) agentReply {
@@ -307,6 +433,7 @@ func (h *AgentPhoneWebhookHandler) clearTurns(callID string) {
 
 func (h *AgentPhoneWebhookHandler) handleCallEnded(w http.ResponseWriter, r *http.Request, evt *webhookEvent) {
 	h.clearTurns(evt.Data.CallID)
+	h.clearConvo(evt.Data.CallID)
 	applicant := h.resolveApplicant(evt)
 	if applicant == nil {
 		w.WriteHeader(http.StatusNoContent)
@@ -322,6 +449,35 @@ func (h *AgentPhoneWebhookHandler) handleCallEnded(w http.ResponseWriter, r *htt
 	}
 	if err := h.DB.Model(&models.Applicant{}).Where("id = ?", applicant.ID).Updates(updates).Error; err != nil {
 		log.Printf("agentphone webhook: persist transcript: %v", err)
+	}
+	if h.SubAgent != nil {
+		task := "The call has ended. You MUST update the existing \"Agent Notes (post-call)\" section " +
+			"of the screening report — this is not optional. Call read_template first to see the exact " +
+			"bullet structure, then call patch_template ONCE with section=\"Agent Notes (post-call)\" " +
+			"and new_content that keeps the same bullet fields, filling each one.\n\n" +
+			"How to fill each field:\n" +
+			"- Candidate name, Role, Date of call: copy from the report header / today's date.\n" +
+			"- Compensation expectations, Earliest start date, Work authorization: extract verbatim from the transcript. Use [unknown] only if truly never discussed.\n" +
+			"- Overall fit (1–5), Strengths, Concerns or gaps, Recommendation (Advance / Hold / Pass), Additional notes: YOU must form a judgment from the transcript. Do not leave these as [unknown] or placeholders — make a call based on the evidence, even if the signal is thin. For Recommendation, pick exactly one of Advance / Hold / Pass and mark it with [x].\n\n" +
+			"Do NOT add new headings, sub-sections, or extra bullets — only fill in the existing fields.\n\n" +
+			"Agent's own call summary: " + evt.Data.Summary
+		applicantID := applicant.ID
+		if h.Transcripts != nil {
+			h.Transcripts.AppendSubAgentInvoked(context.Background(), applicantID, task)
+		}
+		go func() {
+			ctx2 := context.Background()
+			summary, err := h.SubAgent.Run(ctx2, applicantID, task)
+			if err != nil {
+				summary = "error: " + err.Error()
+			} else if summary == "" {
+				summary = "done"
+			}
+			log.Printf("agentphone webhook: post-call sub-agent finished summary=%q", summary)
+			if h.Transcripts != nil {
+				h.Transcripts.AppendSubAgentCompleted(ctx2, applicantID, summary)
+			}
+		}()
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -371,7 +527,7 @@ func digitsOnly(s string) string {
 	return string(b)
 }
 
-func buildSystemPrompt(a *models.Applicant) string {
+func buildSystemPrompt(a *models.Applicant, template string) string {
 	var b strings.Builder
 	if a == nil {
 		b.WriteString("You are a friendly phone screener for a job application. Keep replies short and conversational.\n")
@@ -384,17 +540,29 @@ func buildSystemPrompt(a *models.Applicant) string {
 			b.WriteString(a.Position.Title)
 			b.WriteString("\n")
 		}
+		if a.Position.Description != "" {
+			b.WriteString("Role description: ")
+			b.WriteString(a.Position.Description)
+			b.WriteString("\n")
+		}
 		if a.Resume != "" {
 			b.WriteString("Candidate resume notes: ")
 			b.WriteString(a.Resume)
 			b.WriteString("\n")
 		}
 	}
+	if strings.TrimSpace(template) != "" {
+		b.WriteString("\nScreening guide (work through these in order, one question per turn, follow up naturally before moving on; skip a question if the candidate already answered it):\n")
+		b.WriteString(template)
+		b.WriteString("\n")
+		b.WriteString("When all guide items are covered, call end_call with reason=screening_complete.\n")
+	}
 	b.WriteString("\nYou have two tools available:\n")
+	b.WriteString("- invoke_subagent(task): delegates a background write to a smaller agent that reads the live transcript and patches the screening report. Returns immediately; do not wait.\n")
 	b.WriteString("- end_call(reason, closing_message?): end the phone call.\n")
-	b.WriteString("- invoke_subagent(kind, task): delegate side work to a smaller agent. kind is \"decide\" or \"compose\". Returns immediately; do not wait for a result.\n")
-	b.WriteString("Call end_call when: the screening questions are all answered (reason=screening_complete, include a brief closing_message thanking the candidate), the applicant asks to stop or declines (applicant_declined, with a polite closing_message), you detect voicemail or a long silence (voicemail, omit closing_message), or the conversation is hostile/off-topic and not recoverable (off_topic or safety).\n")
-	b.WriteString("\nCall invoke_subagent eagerly whenever the caller asks you to look something up, research a topic, think through options, draft something, or \"spin up\" / \"use\" sub-agents. If the caller explicitly asks for multiple sub-agents (e.g. \"use two sub agents to research X and Y\"), emit one invoke_subagent tool call per topic in the same turn. Do this even if the topic is off-topic from the screening — fire the sub-agents, then in your spoken reply briefly acknowledge it and steer back to the job questions in one short sentence. Never refuse to spin up sub-agents. After invoking, your spoken reply should be one short sentence and must not wait for sub-agent results.\n")
+	b.WriteString("\nCall invoke_subagent after EVERY applicant turn that yields a fact relevant to the screening guide — compensation expectations, years of experience, specific skills, availability/start date, location, work authorization, willingness to relocate, etc. Emit the invoke_subagent tool call in the SAME turn as your spoken reply, with `task` describing exactly what to record. Example: if the applicant says \"I want five hundred thousand dollars a year\", call invoke_subagent with task=\"record applicant's total compensation expectation: $500,000/year\". If a single turn contains multiple distinct facts, emit one invoke_subagent call per fact. Do not wait for results; your spoken reply stays one short sentence and moves to the next guide question. Skip invoke_subagent only when the applicant turn is pure smalltalk, filler, or a clarifying question with no new information.\n")
+	b.WriteString("\nAlso call invoke_subagent eagerly whenever the caller asks you to look something up, research a topic, think through options, draft something, or \"spin up\" / \"use\" sub-agents. If the caller explicitly asks for multiple sub-agents (e.g. \"use two sub agents to research X and Y\"), emit one invoke_subagent tool call per topic in the same turn. Do this even if the topic is off-topic from the screening — fire the sub-agents, then in your spoken reply briefly acknowledge it and steer back to the job questions in one short sentence. Never refuse to spin up sub-agents.\n")
+	b.WriteString("\nCall end_call when: the screening questions are all answered (reason=screening_complete, include a brief closing_message thanking the candidate), the applicant asks to stop or declines (applicant_declined, with a polite closing_message), you detect voicemail or a long silence (voicemail, omit closing_message), or the conversation is hostile/off-topic and not recoverable (off_topic or safety).\n")
 	return b.String()
 }
 

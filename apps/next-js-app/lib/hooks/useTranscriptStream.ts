@@ -1,6 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  createElement,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { API_BASE_URL, api } from "@/lib/api";
 
 export type Turn = {
@@ -14,7 +23,13 @@ export type Turn = {
 type Event = {
   id: string;
   role: "user" | "assistant" | "system";
-  kind: "utterance" | "token" | "turn_end" | "call_ended" | "sub_agent_invoked";
+  kind:
+    | "utterance"
+    | "token"
+    | "turn_end"
+    | "call_ended"
+    | "sub_agent_invoked"
+    | "sub_agent_completed";
   text: string;
   ts: number;
 };
@@ -74,18 +89,25 @@ export function useTranscriptStream(applicantId: string | undefined) {
             },
           ];
         }
-        if (ev.kind === "sub_agent_invoked") {
+        if (
+          ev.kind === "sub_agent_invoked" ||
+          ev.kind === "sub_agent_completed"
+        ) {
           const last = prev[prev.length - 1];
           const base =
             last && last.role === "assistant" && !last.done
               ? [...prev.slice(0, -1), { ...last, done: true }]
               : prev;
+          const prefix =
+            ev.kind === "sub_agent_invoked"
+              ? "Sub-agent invoked"
+              : "Sub-agent completed";
           return [
             ...base,
             {
               id: ev.id,
               role: "system",
-              text: `Sub-agent invoked — ${ev.text}`,
+              text: `${prefix} — ${ev.text}`,
               done: true,
               ts: ev.ts,
             },
@@ -145,4 +167,35 @@ export function useTranscriptStream(applicantId: string | undefined) {
   }, [applicantId]);
 
   return { turns, connected, reset };
+}
+
+type TranscriptStreamValue = ReturnType<typeof useTranscriptStream>;
+
+const TranscriptStreamContext = createContext<TranscriptStreamValue | null>(
+  null,
+);
+
+export function TranscriptStreamProvider({
+  applicantId,
+  children,
+}: {
+  applicantId: string | undefined;
+  children: ReactNode;
+}) {
+  const value = useTranscriptStream(applicantId);
+  return createElement(
+    TranscriptStreamContext.Provider,
+    { value },
+    children,
+  );
+}
+
+export function useTranscriptStreamContext() {
+  const ctx = useContext(TranscriptStreamContext);
+  if (!ctx) {
+    throw new Error(
+      "useTranscriptStreamContext must be used within TranscriptStreamProvider",
+    );
+  }
+  return ctx;
 }
