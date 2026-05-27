@@ -1,181 +1,109 @@
-# Turborepo starter
+# shortlist
 
-This Turborepo starter is maintained by the Turborepo core team.
+An AI phone screener that calls job applicants, runs a tool-using voice agent on the line, and writes a structured screening report that fills in live during the call.
 
-## Local development (Docker)
+**Demo:** [youtube.com/watch?v=_DTNmJikm6s](https://www.youtube.com/watch?v=_DTNmJikm6s)
 
-Start everything (Next.js, Go API, Postgres, Redis):
+---
 
-```sh
-make up
+## What it does
+
+Upload a position and a list of applicants (name, phone, resume PDF). The system dials each applicant and runs the screening with a voice agent. While the call is in progress, the agent uses tools to look things up and record what it learns:
+
+- **`search_resume`** — semantic search over the applicant's resume (stored in Cloudflare R2, indexed via Supermemory). The agent calls this before asking follow-ups so questions reference real details from the resume.
+- **`invoke_subagent`** — fire-and-forget delegation. After each applicant turn, the voice agent hands a short task ("record their years of React experience") to a parallel sub-agent that reads the transcript, looks up the resume if needed, and patches a single section of the screening report.
+- **`end_call`** — hang up when screening is complete, the applicant declines, voicemail is detected, or for safety.
+
+The screening report is a fixed Markdown template with predefined sections (logistics, experience, skills, etc.). The sub-agent can only **replace** an existing section — it can't invent new ones — which keeps the output structured and comparable across candidates.
+
+Transcript and report both stream to the dashboard over Server-Sent Events, so you can watch the call unfold and the report fill in live.
+
+## Architecture
+
+```
+   PSTN ─── AgentPhone ───►  go-api  ──── AI Gateway (LLM)
+                                │
+                                ├── voice-agent tools
+                                │     • search_resume  ──► Supermemory
+                                │     • invoke_subagent ──► sub-agent loop
+                                │     • end_call
+                                │
+                                ├── sub-agent tools (own LLM loop)
+                                │     • read_transcript  ◄── Redis
+                                │     • read_template    ◄── Redis
+                                │     • search_resume    ──► Supermemory
+                                │     • patch_template   ──► Redis
+                                │
+                                ├── Postgres   (applicants, positions, sessions, users)
+                                └── R2         (resume PDFs)
+
+   browser ── SWR + SSE ───►  next-js-app  ◄── go-api  (transcript + template streams)
 ```
 
-Stop everything:
+## Stack
+
+A [Turborepo](https://turborepo.com) monorepo running locally via Docker Compose.
+
+| Service       | Tech                                     | Port |
+| ------------- | ---------------------------------------- | ---- |
+| `next-js-app` | Next.js + SWR, Google OAuth, Sonner      | 3000 |
+| `go-api`      | Go + Chi + GORM                          | 8080 |
+| `postgres`    | Postgres 16 (alpine)                     | 5432 |
+| `redis`       | Redis 7 (alpine) — transcripts + reports | 6379 |
+
+External services: **AgentPhone** (telephony + voice), **Vercel AI Gateway** (LLM), **Supermemory** (resume embeddings), **Cloudflare R2** (resume storage), **Google OAuth** (user auth).
+
+## Prerequisites
+
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine + Compose v2)
+- `make`
+
+## Quick start
 
 ```sh
-make down
+cp apps/go-api/.env.example apps/go-api/.env   # fill in API keys
+make up                                        # build + start the stack
+make migrate                                   # run GORM auto-migrations
 ```
 
-Wipe Postgres/Redis data too:
+- Frontend → http://localhost:3000
+- API → http://localhost:8080
 
-```sh
-make clean
+When you're done: `make down`. To wipe Postgres/Redis volumes too: `make clean`.
+
+## Common commands
+
+| Command        | What it does                                |
+| -------------- | ------------------------------------------- |
+| `make up`      | Build and start the full stack              |
+| `make down`    | Stop and remove containers (data preserved) |
+| `make clean`   | Stop containers and wipe volumes            |
+| `make migrate` | Run GORM auto-migrations                    |
+| `make logs`    | Tail logs from all services                 |
+| `make restart` | Restart containers                          |
+
+## Repo layout
+
 ```
-
-Apps are served at `http://localhost:3000` (Next.js) and `http://localhost:8080` (Go API). Both support hot-reload — just edit files and save.
-
-## Using this example
-
-Run the following command:
-
-```sh
-npx create-turbo@latest
+apps/
+  next-js-app/             # Dashboard: positions, applicants, live transcripts and reports
+  go-api/
+    cmd/
+      api/                 # Main HTTP server
+      migrate/             # GORM AutoMigrate
+      seed/                # Local fixtures
+      backfill-supermemory/# Re-index existing resumes into Supermemory
+      reset-transcripts/   # Wipe Redis transcripts
+      smoketest/           # Quick wiring check
+    internal/
+      handlers/            # HTTP + SSE handlers, AgentPhone webhook
+      agentphone/          # Tool schemas exposed to the voice agent
+      subagent/            # Sub-agent tool loop + markdown section patcher
+      supermemory/         # Resume semantic search client
+      aigateway/           # Vercel AI Gateway client (chat + tools)
+      storage/             # R2 resume uploads
+      transcripts/         # Redis-backed transcript store
+      templates/           # Redis-backed screening report store
+      oauth/               # Google OAuth
+      db/, models/, middleware/, config/
 ```
-
-## What's inside?
-
-This Turborepo includes the following packages/apps:
-
-### Apps and Packages
-
-- `docs`: a [Next.js](https://nextjs.org/) app
-- `web`: another [Next.js](https://nextjs.org/) app
-- `@repo/ui`: a stub React component library shared by both `web` and `docs` applications
-- `@repo/eslint-config`: `eslint` configurations (includes `eslint-config-next` and `eslint-config-prettier`)
-- `@repo/typescript-config`: `tsconfig.json`s used throughout the monorepo
-
-Each package/app is 100% [TypeScript](https://www.typescriptlang.org/).
-
-### Utilities
-
-This Turborepo has some additional tools already setup for you:
-
-- [TypeScript](https://www.typescriptlang.org/) for static type checking
-- [ESLint](https://eslint.org/) for code linting
-- [Prettier](https://prettier.io) for code formatting
-
-### Build
-
-To build all apps and packages, run the following command:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo build
-```
-
-Without global `turbo`, use your package manager:
-
-```sh
-cd my-turborepo
-npx turbo build
-pnpm dlx turbo build
-pnpm exec turbo build
-```
-
-You can build a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
-
-```sh
-turbo build --filter=docs
-```
-
-Without global `turbo`:
-
-```sh
-npx turbo build --filter=docs
-pnpm exec turbo build --filter=docs
-pnpm exec turbo build --filter=docs
-```
-
-### Develop
-
-To develop all apps and packages, run the following command:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo dev
-```
-
-Without global `turbo`, use your package manager:
-
-```sh
-cd my-turborepo
-npx turbo dev
-pnpm exec turbo dev
-pnpm exec turbo dev
-```
-
-You can develop a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
-
-```sh
-turbo dev --filter=web
-```
-
-Without global `turbo`:
-
-```sh
-npx turbo dev --filter=web
-pnpm exec turbo dev --filter=web
-pnpm exec turbo dev --filter=web
-```
-
-### Remote Caching
-
-> [!TIP]
-> Vercel Remote Cache is free for all plans. Get started today at [vercel.com](https://vercel.com/signup?utm_source=remote-cache-sdk&utm_campaign=free_remote_cache).
-
-Turborepo can use a technique known as [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching) to share cache artifacts across machines, enabling you to share build caches with your team and CI/CD pipelines.
-
-By default, Turborepo will cache locally. To enable Remote Caching you will need an account with Vercel. If you don't have an account you can [create one](https://vercel.com/signup?utm_source=turborepo-examples), then enter the following commands:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo login
-```
-
-Without global `turbo`, use your package manager:
-
-```sh
-cd my-turborepo
-npx turbo login
-pnpm exec turbo login
-pnpm exec turbo login
-```
-
-This will authenticate the Turborepo CLI with your [Vercel account](https://vercel.com/docs/concepts/personal-accounts/overview).
-
-Next, you can link your Turborepo to your Remote Cache by running the following command from the root of your Turborepo:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
-
-```sh
-turbo link
-```
-
-Without global `turbo`:
-
-```sh
-npx turbo link
-pnpm exec turbo link
-pnpm exec turbo link
-```
-
-## Useful Links
-
-Learn more about the power of Turborepo:
-
-- [Tasks](https://turborepo.dev/docs/crafting-your-repository/running-tasks)
-- [Caching](https://turborepo.dev/docs/crafting-your-repository/caching)
-- [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching)
-- [Filtering](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters)
-- [Configuration Options](https://turborepo.dev/docs/reference/configuration)
-- [CLI Usage](https://turborepo.dev/docs/reference/command-line-reference)
